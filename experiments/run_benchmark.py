@@ -16,6 +16,7 @@ sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
 import argparse
 import json
 import torch
+from datetime import datetime
 from datasets import load_dataset
 from tqdm import tqdm
 from PIL import Image
@@ -69,9 +70,21 @@ def get_preprocessor(condition: str, deg_type: str = "", rest_type: str = "", **
         return lambda imgs: [rest_pipeline(deg_pipeline(img)) for img in imgs]
 
     if condition == "segmented":
-        from robust.segmentation.adaptive_seg import adaptive_segment
-        seg_params = {k: v for k, v in kwargs.items() if k != "seg_method"}
-        return lambda imgs: [adaptive_segment(img, **seg_params) for img in imgs]
+        seg_method = kwargs.get("seg_method", "adaptive")
+        if seg_method == "adaptive":
+            from robust.segmentation.adaptive_seg import adaptive_segment
+            seg_fn = adaptive_segment
+        elif seg_method == "grabcut":
+            from robust.segmentation.grabcut_seg import grabcut_segment
+            seg_fn = grabcut_segment
+        elif seg_method == "edge":
+            from robust.segmentation.edge_seg import edge_segment
+            seg_fn = edge_segment
+        else:
+            raise ValueError(f"Unknown seg_method: {seg_method!r}")
+        seg_params = {k: v for k, v in kwargs.items()
+                      if k not in ("seg_method",)}
+        return lambda imgs: [seg_fn(img, **seg_params) for img in imgs]
 
     raise ValueError(f"Unknown condition: {condition!r}")
 
@@ -128,11 +141,15 @@ def main():
                         help="Degradation type (for degraded/restored)")
     parser.add_argument("--rest", default="nlmeans",
                         help="Restoration type (for restored)")
+    parser.add_argument("--seg_method", default="adaptive",
+                        choices=["adaptive", "grabcut", "edge"],
+                        help="Segmentation method (for segmented)")
     parser.add_argument("--subsets", nargs="+", default=VIDORE_SUBSETS)
     args = parser.parse_args()
 
     model, processor = load_model()
-    preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest)
+    preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest,
+                                     seg_method=args.seg_method)
 
     results = {}
     for subset in args.subsets:
@@ -147,10 +164,20 @@ def main():
         tag += f"_{args.deg}"
     elif args.condition == "restored":
         tag += f"_{args.deg}_{args.rest}"
+    elif args.condition == "segmented":
+        tag += f"_{args.seg_method}"
 
+    # Save to timestamped directory (archive)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts_dir = RESULTS_DIR / timestamp
+    ts_dir.mkdir(parents=True, exist_ok=True)
+    (ts_dir / f"results_{tag}.json").write_text(json.dumps(results, indent=2))
+
+    # Also save flat for backward compatibility (visualize_results.py)
     out = RESULTS_DIR / f"results_{tag}.json"
     out.write_text(json.dumps(results, indent=2))
     print(f"\nSaved to {out}")
+    print(f"Archived to {ts_dir / f'results_{tag}.json'}")
 
 
 if __name__ == "__main__":

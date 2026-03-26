@@ -13,7 +13,7 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # Model — using ColQwen2 (better performance than original ColPali)
 MODEL_NAME = "vidore/colqwen2-v1.0"
 PROCESSOR_NAME = "vidore/colqwen2-v1.0"
-DEVICE = "cuda"          # Change to "mps" for Apple Silicon
+DEVICE = "cuda:1"        # Change to "mps" for Apple Silicon
 
 # ViDoRe evaluation subsets
 VIDORE_SUBSETS = [

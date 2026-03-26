@@ -14,6 +14,8 @@ def document_image():
     return Image.fromarray(arr)
 
 
+# ──────────────── Adaptive ────────────────
+
 def test_adaptive_returns_pil(document_image):
     from robust.segmentation.adaptive_seg import adaptive_segment
     assert isinstance(adaptive_segment(document_image), Image.Image)
@@ -54,4 +56,72 @@ def test_adaptive_handles_black_image():
     from robust.segmentation.adaptive_seg import adaptive_segment
     black = Image.new("RGB", (200, 200), (0, 0, 0))
     result = adaptive_segment(black)
+    assert isinstance(result, Image.Image)
+
+
+# ──────────────── GrabCut ────────────────
+
+def test_grabcut_returns_pil(document_image):
+    from robust.segmentation.grabcut_seg import grabcut_segment
+    assert isinstance(grabcut_segment(document_image), Image.Image)
+
+
+def test_grabcut_whiten_same_size(document_image):
+    from robust.segmentation.grabcut_seg import grabcut_segment
+    result = grabcut_segment(document_image, mode="whiten")
+    assert result.size == document_image.size
+
+
+def test_grabcut_crop_smaller_or_equal(document_image):
+    from robust.segmentation.grabcut_seg import grabcut_segment
+    result = grabcut_segment(document_image, mode="crop")
+    assert result.size[0] <= document_image.size[0]
+    assert result.size[1] <= document_image.size[1]
+
+
+def test_grabcut_handles_white_image():
+    from robust.segmentation.grabcut_seg import grabcut_segment
+    white = Image.new("RGB", (200, 200), (255, 255, 255))
+    result = grabcut_segment(white)
+    assert isinstance(result, Image.Image)
+
+
+def test_grabcut_handles_black_image():
+    from robust.segmentation.grabcut_seg import grabcut_segment
+    black = Image.new("RGB", (200, 200), (0, 0, 0))
+    result = grabcut_segment(black)
+    assert isinstance(result, Image.Image)
+
+
+# ──────────────── Edge-based ────────────────
+
+def test_edge_returns_pil(document_image):
+    from robust.segmentation.edge_seg import edge_segment
+    assert isinstance(edge_segment(document_image), Image.Image)
+
+
+def test_edge_whiten_same_size(document_image):
+    from robust.segmentation.edge_seg import edge_segment
+    result = edge_segment(document_image, mode="whiten")
+    assert result.size == document_image.size
+
+
+def test_edge_crop_smaller_or_equal(document_image):
+    from robust.segmentation.edge_seg import edge_segment
+    result = edge_segment(document_image, mode="crop")
+    assert result.size[0] <= document_image.size[0]
+    assert result.size[1] <= document_image.size[1]
+
+
+def test_edge_handles_white_image():
+    from robust.segmentation.edge_seg import edge_segment
+    white = Image.new("RGB", (200, 200), (255, 255, 255))
+    result = edge_segment(white)
+    assert isinstance(result, Image.Image)
+
+
+def test_edge_handles_black_image():
+    from robust.segmentation.edge_seg import edge_segment
+    black = Image.new("RGB", (200, 200), (0, 0, 0))
+    result = edge_segment(black)
     assert isinstance(result, Image.Image)

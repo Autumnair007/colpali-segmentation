@@ -2,7 +2,7 @@
 """
 Segmentation experiment runner.
 
-Runs clean baseline + adaptive segmentation on ViDoRe subsets,
+Runs clean baseline + multiple segmentation methods on ViDoRe subsets,
 saves all results, visualizations, and console log to outputs/<timestamp>/.
 
 Usage:
@@ -12,9 +12,8 @@ Usage:
     # Override device / model
     python experiments/run_segmentation_experiment.py --device cuda:1 --model vidore/colqwen2-v1.0
 
-    # Background-safe (survives terminal close)
-    nohup python experiments/run_segmentation_experiment.py --device cuda:1 \
-        > outputs/experiment_console.log 2>&1 &
+    # Background-safe (log auto-saved to outputs/<timestamp>/experiment_console.log)
+    nohup python experiments/run_segmentation_experiment.py --device cuda:0 &
 """
 import sys
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
@@ -37,6 +36,26 @@ from experiments.config import (
 from colpali_engine.models import ColQwen2, ColQwen2Processor
 from robust.evaluation.metrics import ndcg_at_k, recall_at_k, mean_reciprocal_rank
 from robust.segmentation.adaptive_seg import adaptive_segment
+from robust.segmentation.grabcut_seg import grabcut_segment
+from robust.segmentation.edge_seg import edge_segment
+
+
+# ──────────────────────────────── Logging ───────────────────────────────
+
+class _TeeLogger:
+    """Write to both a file and the original stream."""
+    def __init__(self, filepath, stream):
+        self.file = open(filepath, "w")
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data)
+        self.file.write(data)
+        self.file.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.file.flush()
 
 
 # ──────────────────────────────── Helpers ───────────────────────────────
@@ -101,8 +120,15 @@ def evaluate_subset(model, processor, subset_name, preprocess_fn, device):
     }
 
 
-def save_sample_visualizations(subset_name, output_dir, num_samples=5):
-    """Save before/after visualization for a few samples."""
+SEG_METHODS = {
+    "adaptive": ("Adaptive Threshold", adaptive_segment),
+    "grabcut":  ("GrabCut",            grabcut_segment),
+    "edge":     ("Edge (Canny)",        edge_segment),
+}
+
+
+def save_sample_visualizations(subset_name, output_dir, seg_methods, num_samples=5):
+    """Save before/after visualization for a few samples across all methods."""
     print(f"  Saving sample visualizations for {subset_name}...")
     ds = load_dataset(subset_name, split="test")
     vis_dir = output_dir / "visualizations" / subset_name.split("/")[-1]
@@ -112,18 +138,21 @@ def save_sample_visualizations(subset_name, output_dir, num_samples=5):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    ncols = 1 + len(seg_methods)  # original + each method
     for idx in range(min(num_samples, len(ds))):
         img = ds[idx]["image"].convert("RGB")
-        adaptive_result = adaptive_segment(img)
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 6))
         axes[0].imshow(np.array(img))
         axes[0].set_title("Original")
         axes[0].axis("off")
 
-        axes[1].imshow(np.array(adaptive_result))
-        axes[1].set_title("Adaptive Segmentation")
-        axes[1].axis("off")
+        for col, key in enumerate(seg_methods, start=1):
+            label, fn = SEG_METHODS[key]
+            result = fn(img)
+            axes[col].imshow(np.array(result))
+            axes[col].set_title(label)
+            axes[col].axis("off")
 
         fig.suptitle(f"Sample {idx}: {ds[idx]['query'][:80]}...", fontsize=10)
         fig.tight_layout()
@@ -153,6 +182,12 @@ def main():
     output_dir = Path(__file__).parent.parent / "outputs" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Auto-log console output to the timestamped directory
+    _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+    log_path = output_dir / "experiment_console.log"
+    sys.stdout = _TeeLogger(str(log_path), _orig_stdout)
+    sys.stderr = _TeeLogger(str(log_path), _orig_stderr)
+
     print(f"={'=' * 69}")
     print(f"  Segmentation Experiment — {timestamp}")
     print(f"  Output: {output_dir}")
@@ -162,10 +197,9 @@ def main():
 
     model, processor = load_model(model_name, processor_name, device)
 
-    conditions = {
-        "clean": lambda imgs: imgs,
-        "segmented_adaptive": lambda imgs: [adaptive_segment(img) for img in imgs],
-    }
+    conditions = {"clean": lambda imgs: imgs}
+    for key, (label, fn) in SEG_METHODS.items():
+        conditions[f"segmented_{key}"] = (lambda _fn=fn: lambda imgs: [_fn(img) for img in imgs])()
 
     all_results = {}
     experiment_log = {
@@ -195,7 +229,12 @@ def main():
 
         all_results[cond_name] = cond_results
 
-        # Also save per-condition to RESULTS_DIR for compatibility
+        # Save per-condition to timestamped results dir
+        results_ts_dir = RESULTS_DIR / timestamp
+        results_ts_dir.mkdir(parents=True, exist_ok=True)
+        (results_ts_dir / f"results_{cond_name}.json").write_text(
+            json.dumps(cond_results, indent=2))
+        # Also save flat for backward compatibility (visualize_results.py)
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         (RESULTS_DIR / f"results_{cond_name}.json").write_text(
             json.dumps(cond_results, indent=2))
@@ -258,9 +297,10 @@ def main():
         print(f"\nWarning: Failed to generate chart: {e}")
 
     # ─── Sample visualizations ───
+    seg_keys = list(SEG_METHODS.keys())
     for subset in args.subsets:
         try:
-            save_sample_visualizations(subset, output_dir)
+            save_sample_visualizations(subset, output_dir, seg_keys)
         except Exception as e:
             print(f"Warning: Failed to save visualizations for {subset}: {e}")
 
