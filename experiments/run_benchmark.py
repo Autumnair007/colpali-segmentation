@@ -10,6 +10,7 @@ Usage:
     python experiments/run_benchmark.py --condition degraded --deg heavy_noise
     python experiments/run_benchmark.py --condition restored --deg heavy_noise --rest nlmeans
     python experiments/run_benchmark.py --condition segmented
+    python experiments/run_benchmark.py --condition multiview --views identity nlmeans gaussian wiener
 """
 import sys
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
@@ -17,25 +18,38 @@ import argparse
 import json
 import torch
 from datetime import datetime
-from datasets import load_dataset
+from datasets import DownloadConfig, load_dataset
 from tqdm import tqdm
 from PIL import Image
-from typing import List, Callable
+from typing import Callable, List, Sequence
 
 from experiments.config import (
     MODEL_NAME, PROCESSOR_NAME, DEVICE, BATCH_SIZE, RESULTS_DIR, VIDORE_SUBSETS
 )
+from experiments.multiview import build_view_batch, fuse_score_matrices, validate_views
 from colpali_engine.models import ColQwen2, ColQwen2Processor
 from robust.evaluation.metrics import ndcg_at_k, recall_at_k, mean_reciprocal_rank
 
 
-def load_model():
-    print(f"Loading {MODEL_NAME}...")
+def load_model(
+    model_name: str = MODEL_NAME,
+    processor_name: str = PROCESSOR_NAME,
+    local_files_only: bool = False,
+):
+    print(f"Loading {model_name}...")
     model = ColQwen2.from_pretrained(
-        MODEL_NAME, torch_dtype=torch.bfloat16, device_map=DEVICE,
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map=DEVICE,
+        local_files_only=local_files_only,
     ).eval()
-    processor = ColQwen2Processor.from_pretrained(PROCESSOR_NAME)
+    processor = ColQwen2Processor.from_pretrained(processor_name, local_files_only=local_files_only)
     return model, processor
+
+
+def load_eval_dataset(subset_name: str, local_files_only: bool = False):
+    download_config = DownloadConfig(local_files_only=True) if local_files_only else None
+    return load_dataset(subset_name, split="test", download_config=download_config)
 
 
 def get_preprocessor(condition: str, deg_type: str = "", rest_type: str = "", **kwargs) -> Callable:
@@ -89,34 +103,35 @@ def get_preprocessor(condition: str, deg_type: str = "", rest_type: str = "", **
     raise ValueError(f"Unknown condition: {condition!r}")
 
 
-def evaluate_subset(model, processor, subset_name: str, preprocess_fn: Callable) -> dict:
-    print(f"  Loading {subset_name}...")
-    ds = load_dataset(subset_name, split="test")
-    queries = [row["query"] for row in ds]
-    images  = [row["image"].convert("RGB") for row in ds]
-    n = len(queries)
-
-    # Encode queries
+def encode_queries(model, processor, queries: Sequence[str]) -> List[torch.Tensor]:
     all_q_vecs = []
-    for i in range(0, n, BATCH_SIZE):
+    for i in range(0, len(queries), BATCH_SIZE):
         inputs = processor.process_queries(queries[i:i+BATCH_SIZE]).to(DEVICE)
         with torch.no_grad():
             vecs = model(**inputs)
         all_q_vecs.extend([v.cpu().float() for v in vecs])
+    return all_q_vecs
 
-    # Encode documents (with preprocessing intercept)
+
+def encode_documents(
+    model,
+    processor,
+    images: Sequence[Image.Image],
+    preprocess_fn: Callable,
+    desc: str,
+) -> List[torch.Tensor]:
     all_d_vecs = []
-    for i in tqdm(range(0, n, BATCH_SIZE), desc="  Encoding docs"):
+    for i in tqdm(range(0, len(images), BATCH_SIZE), desc=desc):
         preprocessed = preprocess_fn(images[i:i+BATCH_SIZE])
         inputs = processor.process_images(preprocessed).to(DEVICE)
         with torch.no_grad():
             vecs = model(**inputs)
         all_d_vecs.extend([v.cpu().float() for v in vecs])
+    return all_d_vecs
 
-    # Score (n_q, n_d) — pass as list to handle variable-length sequences
-    scores_matrix = processor.score_multi_vector(all_q_vecs, all_d_vecs)
 
-    # Compute metrics (query i -> document i is the correct match)
+def compute_metrics(scores_matrix: torch.Tensor) -> dict:
+    n = scores_matrix.shape[0]
     ndcg_list, rec_list, mrr_list = [], [], []
     for i in range(n):
         s = scores_matrix[i].tolist()
@@ -133,10 +148,82 @@ def evaluate_subset(model, processor, subset_name: str, preprocess_fn: Callable)
     }
 
 
+def evaluate_subset(
+    model,
+    processor,
+    subset_name: str,
+    preprocess_fn: Callable,
+    local_files_only: bool = False,
+    score_batch_size: int = 16,
+) -> dict:
+    print(f"  Loading {subset_name}...")
+    ds = load_eval_dataset(subset_name, local_files_only=local_files_only)
+    queries = [row["query"] for row in ds]
+    images  = [row["image"].convert("RGB") for row in ds]
+
+    # Encode queries
+    all_q_vecs = encode_queries(model, processor, queries)
+
+    # Encode documents (with preprocessing intercept)
+    all_d_vecs = encode_documents(model, processor, images, preprocess_fn, desc="  Encoding docs")
+
+    # Score (n_q, n_d) — pass as list to handle variable-length sequences
+    scores_matrix = processor.score_multi_vector(
+        all_q_vecs,
+        all_d_vecs,
+        batch_size=score_batch_size,
+        device=DEVICE,
+    )
+
+    return compute_metrics(scores_matrix)
+
+
+def evaluate_subset_multiview(
+    model,
+    processor,
+    subset_name: str,
+    views: Sequence[str],
+    fusion: str,
+    local_files_only: bool = False,
+    score_batch_size: int = 16,
+) -> dict:
+    views = validate_views(views)
+    print(f"  Loading {subset_name}...")
+    ds = load_eval_dataset(subset_name, local_files_only=local_files_only)
+    queries = [row["query"] for row in ds]
+    images = [row["image"].convert("RGB") for row in ds]
+
+    all_q_vecs = encode_queries(model, processor, queries)
+
+    score_matrices = {}
+    for view in views:
+        all_d_vecs = encode_documents(
+            model,
+            processor,
+            images,
+            preprocess_fn=lambda batch, view=view: build_view_batch(batch, view),
+            desc=f"  Encoding docs [{view}]",
+        )
+        score_matrices[view] = processor.score_multi_vector(
+            all_q_vecs,
+            all_d_vecs,
+            batch_size=score_batch_size,
+            device=DEVICE,
+        )
+
+    scores_matrix = fuse_score_matrices(score_matrices, fusion)
+    metrics = compute_metrics(scores_matrix)
+    metrics["fusion"] = fusion
+    metrics["views"] = views
+    return metrics
+
+
 def main():
+    global DEVICE
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--condition", default="clean",
-                        choices=["clean", "degraded", "restored", "segmented"])
+                        choices=["clean", "degraded", "restored", "segmented", "multiview"])
     parser.add_argument("--deg",  default="heavy_noise",
                         help="Degradation type (for degraded/restored)")
     parser.add_argument("--rest", default="nlmeans",
@@ -144,17 +231,62 @@ def main():
     parser.add_argument("--seg_method", default="adaptive",
                         choices=["adaptive", "grabcut", "edge"],
                         help="Segmentation method (for segmented)")
+    parser.add_argument("--views", nargs="+",
+                        default=["identity", "nlmeans", "gaussian", "wiener"],
+                        help="Multiview branches to encode (for multiview)")
+    parser.add_argument("--fusion", default="weighted",
+                        choices=["max", "mean", "weighted"],
+                        help="Score fusion strategy (for multiview)")
+    parser.add_argument("--local-files-only", action="store_true",
+                        help="Use only locally cached Hugging Face model and dataset files.")
+    parser.add_argument("--model", default=None,
+                        help="Model name or local path. Defaults to experiments.config.MODEL_NAME.")
+    parser.add_argument("--processor", default=None,
+                        help="Processor name or local path. Defaults to --model, then PROCESSOR_NAME.")
+    parser.add_argument("--device", default=None,
+                        help="Device override, e.g. cuda:0, cuda:1, cpu. Defaults to experiments.config.DEVICE.")
+    parser.add_argument("--score-batch-size", type=int, default=16,
+                        help="Batch size for MaxSim scoring. Lower values reduce GPU memory use.")
     parser.add_argument("--subsets", nargs="+", default=VIDORE_SUBSETS)
     args = parser.parse_args()
 
-    model, processor = load_model()
-    preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest,
-                                     seg_method=args.seg_method)
+    if args.device:
+        DEVICE = args.device
+    model_name = args.model or MODEL_NAME
+    processor_name = args.processor or args.model or PROCESSOR_NAME
+
+    model, processor = load_model(
+        model_name=model_name,
+        processor_name=processor_name,
+        local_files_only=args.local_files_only,
+    )
+    preprocess_fn = None
+    if args.condition != "multiview":
+        preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest,
+                                         seg_method=args.seg_method)
 
     results = {}
     for subset in args.subsets:
         print(f"\nEvaluating: {subset.split('/')[-1]}")
-        metrics = evaluate_subset(model, processor, subset, preprocess_fn)
+        if args.condition == "multiview":
+            metrics = evaluate_subset_multiview(
+                model,
+                processor,
+                subset,
+                views=args.views,
+                fusion=args.fusion,
+                local_files_only=args.local_files_only,
+                score_batch_size=args.score_batch_size,
+            )
+        else:
+            metrics = evaluate_subset(
+                model,
+                processor,
+                subset,
+                preprocess_fn,
+                local_files_only=args.local_files_only,
+                score_batch_size=args.score_batch_size,
+            )
         results[subset.split("/")[-1]] = metrics
         print(f"  nDCG@5={metrics['ndcg@5']:.4f}  Recall@5={metrics['recall@5']:.4f}  MRR={metrics['mrr']:.4f}")
 
@@ -166,6 +298,10 @@ def main():
         tag += f"_{args.deg}_{args.rest}"
     elif args.condition == "segmented":
         tag += f"_{args.seg_method}"
+    elif args.condition == "multiview":
+        tag += f"_{args.fusion}_{'-'.join(args.views)}"
+    if len(args.subsets) == 1:
+        tag += f"_{args.subsets[0].split('/')[-1]}"
 
     # Save to timestamped directory (archive)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
