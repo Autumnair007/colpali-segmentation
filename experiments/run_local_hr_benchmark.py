@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence, Set
@@ -31,30 +32,40 @@ DATASET_ROOT = PROJECT_ROOT / "data" / "degraded_dataset"
 DEFAULT_DOC_ID = "employment_and_social_developments_in_europe_2024-KEBD24002ENN"
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "colqwen2-v1.0"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "local_hr"
+DEFAULT_VARIANT = "PD_MB_GN_JC_LR_CS"
+DEFAULT_USE_MULTIVIEW = False
+DEFAULT_MULTIVIEW_VIEWS = ["identity", "nlmeans", "gaussian", "wiener"]
+DEFAULT_MULTIVIEW_FUSION = "weighted"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run local ColQwen2 retrieval on the degraded HR subset.")
     parser.add_argument("--mode", choices=["clean", "degraded"])
-    parser.add_argument("--variant", default="PD_MB_GN_JC_LR_CS", help="Degraded variant suffix to evaluate.")
+    parser.add_argument("--variant", default=DEFAULT_VARIANT, help="Degraded variant suffix to evaluate.")
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT)
     parser.add_argument("--doc-id", default=DEFAULT_DOC_ID)
     parser.add_argument("--model", default=str(DEFAULT_MODEL_PATH))
     parser.add_argument("--processor", default=None, help="Defaults to the same path as --model.")
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--score-batch-size", type=int, default=16)
     parser.add_argument(
+        "--use-multiview",
+        action="store_true",
+        default=DEFAULT_USE_MULTIVIEW,
+        help="Enable training-free multiview score fusion. Defaults to singleview.",
+    )
+    parser.add_argument(
         "--views",
         nargs="+",
-        default=None,
-        help=f"Optional multiview branches. Available: {', '.join(AVAILABLE_VIEWS)}",
+        default=DEFAULT_MULTIVIEW_VIEWS,
+        help=f"Multiview branches used only with --use-multiview. Available: {', '.join(AVAILABLE_VIEWS)}",
     )
     parser.add_argument(
         "--fusion",
         choices=["max", "mean", "weighted"],
-        default="weighted",
-        help="Score fusion strategy when multiple views are used.",
+        default=DEFAULT_MULTIVIEW_FUSION,
+        help="Score fusion strategy used only with --use-multiview.",
     )
     parser.add_argument(
         "--include-cross-doc-queries",
@@ -68,6 +79,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Validate dataset wiring without loading the model.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args()
+
+
+def resolve_views(args: argparse.Namespace, argv: Sequence[str] | None = None) -> List[str]:
+    if args.use_multiview:
+        return validate_views(args.views)
+
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if "--views" in argv:
+        print("--views ignored because --use-multiview is not set.")
+    return ["identity"]
 
 
 def load_tables(dataset_root: Path) -> Dict[str, pd.DataFrame]:
@@ -235,7 +256,7 @@ def compute_metrics(scores_matrix: torch.Tensor, query_ids: Sequence[int], relev
 def save_results(output_dir: Path, payload: Dict[str, object]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if payload["views"] == ["identity"]:
+    if not payload.get("use_multiview", False):
         method_tag = "singleview"
     else:
         method_tag = f"multiview-{payload['fusion']}"
@@ -257,7 +278,7 @@ def main() -> None:
     if args.mode is None:
         raise ValueError("--mode is required unless --list-variants is used.")
 
-    selected_views = validate_views(args.views) if args.views is not None else ["identity"]
+    selected_views = resolve_views(args)
 
     tables = load_tables(args.dataset_root)
     selected_queries, relevant_pages, summary = select_queries(
@@ -279,9 +300,10 @@ def main() -> None:
         "local_files_only": args.local_files_only,
         "include_cross_doc_queries": args.include_cross_doc_queries,
         "page_count": len(page_paths),
+        "use_multiview": args.use_multiview,
         "views": selected_views,
         "fusion": args.fusion,
-        "method": "singleview" if selected_views == ["identity"] else "multiview",
+        "method": "multiview" if args.use_multiview else "singleview",
         "query_summary": summary,
     }
 
@@ -305,7 +327,7 @@ def main() -> None:
     query_ids = selected_queries["query_id"].tolist()
 
     query_embeddings = encode_queries(model, processor, query_texts, args.batch_size, args.device)
-    if selected_views == ["identity"]:
+    if not args.use_multiview:
         doc_embeddings = encode_documents(
             model,
             processor,
