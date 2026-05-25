@@ -1,91 +1,85 @@
-# ColPali-Robust：视觉文档检索在退化场景下的鲁棒性分析
+# ColPali-Robust：面向退化文档的视觉文档检索鲁棒性研究
 
-> **本项目基于 [illuin-tech/colpali](https://github.com/illuin-tech/colpali) 官方仓库构建**，在不修改任何原始代码的前提下，通过叠加研究层来分析 ColPali/ColQwen2 模型在真实恶劣场景下的检索能力。
-
----
-
-## 研究背景与动机
-
-ColPali 论文证明了"直接对文档页面图像做嵌入（Embedding）"的检索方式在高清干净 PDF 上效果极好。但在现实世界中——尤其是医疗档案、历史文献、金融发票等场景——文档图片往往存在以下问题：
-
-| 退化类型 | 描述 | 现实场景 |
-|---------|------|---------|
-| 高斯噪声 | 随机像素扰动 | 低质量扫描仪、数字噪声 |
-| 运动模糊 | 相机抖动导致的模糊 | 手机拍摄文件 |
-| 图像倾斜 | 文档放置不正 | 扫描件、照片 |
-| JPEG 压缩 | 过度压缩的伪影 | 网络传输、低质量存储 |
-| 水印叠加 | 版权水印、机密标记 | 企业文档、法律文件 |
-
-**核心问题：ColPali 对这些退化有多敏感？在检索前加入图像复原或背景分割，能否有效提升检索性能？**
+> 本项目基于 [illuin-tech/colpali](https://github.com/illuin-tech/colpali) 构建，在保留原始 ColPali/ColQwen2 能力的基础上，新增退化文档合成、前端复原、退化不变表示学习、退化感知 Patch 加权与整体评估模块。当前版本已根据最新研究内容与组员分工重排项目结构。
 
 ---
 
-## 研究方案（方案一：ColPali-Robust）
+## 最新研究定位
 
-### 整体思路
+ColPali/ColQwen2 在高清、干净的数字原生 PDF 截图上表现优秀，但真实文档图像常同时受到光照不均、运动模糊、透视畸变、低分辨率、JPEG 压缩、噪声和色彩偏移等退化因素影响。退化不仅会降低视觉质量，也可能改变多向量表示中的 Patch 贡献，使检索模型把外观噪声误当作文档语义或版面结构。
 
+本项目当前聚焦两个研究内容：
+
+| 研究内容 | 核心问题 | 输出 |
+| --- | --- | --- |
+| 面向视觉文档检索的退化图像合成与前端复原 | 如何可控生成退化文档，并评估复原是否真正提升检索性能 | 参数化退化数据集、复原管线、退化敏感性曲线、复原-检索解耦分析 |
+| 面向受损文档的视觉语言模型鲁棒性增强 | 如何让模型在受损文档上生成更稳定的语义嵌入 | 退化不变特征学习、域/风格归一化探索、Patch 置信度加权、整体鲁棒性评估 |
+
+---
+
+## 技术路线
+
+```text
+ViDoRe 干净文档图像
+        |
+        v
+参数化退化合成：噪声 / 模糊 / JPEG / 几何倾斜 / 低分辨率 / 色彩偏移
+        |
+        +--> 退化敏感性基准：clean vs degraded，绘制退化强度-检索性能曲线
+        |
+        +--> 前端复原：去噪 / 去模糊 / 超分 / 倾斜校正
+        |         |
+        |         v
+        |   复原-检索解耦分析：视觉质量提升是否等价于 nDCG@5 / MRR 提升
+        |
+        +--> 表示学习增强：clean-degraded 正样本对、Patch 嵌入对齐、域对抗/风格归一化
+        |
+        +--> 推理增强：退化感知 Patch 置信度加权，降低低质量 Patch 的误导性贡献
 ```
-原始 ColPali 流程：
-  文档图像 → process_images() → 模型编码 → MaxSim 打分
 
-ColPali-Robust 流程：
-  文档图像 → [退化注入] → [复原/分割] → process_images() → 模型编码 → MaxSim 打分
-                 ↑                ↑
-              模拟现实          我们的改进
-```
+整体评估以 ViDoRe 检索指标为主，覆盖 `nDCG@5`、`MRR`、计算延迟、存储代价和不同参数配置的横向比较。
 
-**关键洞察**：只需在 `process_images()` 调用之前插入一个预处理层，即可完整评估各类处理策略对检索性能的影响，**无需修改模型、无需重新训练**。
+---
 
-### 四个研究子任务
+## 组员分工
 
-| 子任务 | 负责人 | 内容 |
-|--------|--------|------|
-| **A. 退化与复原** | 同学A | 构建退化数据集，用去噪/去模糊算法复原，量化复原效果 |
-| **B. 文档分割** | 同学B | 用 Otsu 阈值+轮廓检测分割文档主体，去除无用背景 |
-| **C. 域外泛化** | 同学C | 在训练集之外的极端文档类型上测试（中文古籍、手写笔记等） |
-| **D. 评估与寻优** | 同学D | nDCG@5 评估框架 + PSO 粒子群算法寻找最优复原参数 |
+| 负责人 | 任务模块 | 主要职责 | 对应目录 |
+| --- | --- | --- | --- |
+| 廖锐煊 | 退化文档数据集的可控合成与退化敏感性基准评估 | 基于 ViDoRe 图像设计参数化多退化合成管线，支持单一退化和多退化耦合；评估退化类型和强度对 ColPali 检索性能的影响 | `robust/degradation/`, `experiments/` |
+| 王昱皓 | 轻量级前端复原网络的集成测试与“复原-检索”解耦分析 | 集成 DnCNN/FFDNet、ESRGAN/BSRGAN 轻量变体、传统去噪/去模糊/倾斜校正方法；比较原始、退化、复原后的 Patch 嵌入分布与检索得分 | `robust/restoration/`, `experiments/` |
+| 何青泽 | 退化不变特征学习策略研究与验证 | 构造 clean-degraded 正样本对，引入对比学习、Patch 嵌入对齐、风格归一化或域对抗训练，提升模型表示的退化不变性 | `robust/invariant_learning/` |
+| 郭明坤 | 退化感知延迟交互加权机制与整体评估 | 在 ColPali 延迟交互计算中引入 Patch 置信度，降低严重退化 Patch 的误导性权重；构建融合检索精度、延迟和存储代价的评估体系 | `robust/patch_weighting/`, `robust/evaluation/` |
 
 ---
 
 ## 项目结构
 
-```
+```text
 colpali-robust/
-├── colpali_engine/              # 官方代码（未修改）
-├── scripts/                     # 官方训练脚本（未修改）
-│
-├── robust/                      # 我们新增的研究包
-│   ├── degradation/             # 图像退化模块（同学A）
-│   │   ├── noise.py             # 高斯噪声、椒盐噪声
-│   │   ├── blur.py              # 高斯模糊、运动模糊
-│   │   ├── tilt.py              # 文档倾斜/歪斜
-│   │   ├── jpeg.py              # JPEG 压缩退化
-│   │   ├── watermark.py         # 水印叠加
-│   │   └── pipeline.py          # 可组合的退化流水线
-│   ├── restoration/             # 图像复原模块（同学A）
-│   │   ├── denoise.py           # NLMeans 去噪、高斯平滑
-│   │   ├── deblur.py            # Wiener 滤波去模糊
-│   │   └── pipeline.py          # 可组合的复原流水线
-│   ├── segmentation/            # 文档分割模块（同学B）
-│   │   └── document_seg.py      # Otsu + 轮廓检测，背景置白
-│   ├── evaluation/              # 评估指标（同学D）
-│   │   └── metrics.py           # nDCG@K, Recall@K, MRR
-│   └── optimization/            # 参数寻优（同学D）
-│       └── pso.py               # PSO 粒子群优化器
-│
-├── experiments/                 # 实验脚本
-│   ├── config.py                # 全局配置（模型、数据集、路径）
-│   ├── run_benchmark.py         # 主实验入口（支持所有条件）
-│   ├── pso_optimize.py          # PSO 寻找最优复原参数
-│   └── visualize_results.py     # 生成对比图表
-│
-└── tests/                       # 单元测试（21 项，无需 GPU）
-    ├── test_degradation.py
-    ├── test_restoration.py
-    ├── test_segmentation.py
-    ├── test_metrics.py
-    └── test_pso.py
+├── colpali_engine/                 # 原始 ColPali/ColQwen2 引擎代码
+├── scripts/                        # 官方训练与配置脚本
+├── robust/                         # 本项目新增研究层
+│   ├── degradation/                # 退化合成与退化敏感性基准
+│   ├── restoration/                # 前端复原与复原-检索解耦分析
+│   ├── invariant_learning/         # 退化不变表示学习策略
+│   ├── patch_weighting/            # 退化感知 Patch 置信度加权
+│   ├── evaluation/                 # nDCG@K、MRR、延迟、存储等评估指标
+│   ├── segmentation/               # 历史实验模块：文档分割，保留作可选对照
+│   └── optimization/               # 历史实验模块：PSO 参数搜索，保留作可选工具
+├── experiments/                    # 实验入口与配置
+│   ├── config.py
+│   ├── run_benchmark.py
+│   ├── run_degradation_study.py
+│   ├── run_restoration_analysis.py
+│   ├── run_invariant_learning.py
+│   └── run_patch_weighting_eval.py
+├── documents/
+│   ├── project_research_plan_20260525.md
+│   └── legacy/
+└── tests/
 ```
+
+旧版“文档分割、域外泛化、PSO 寻优”不再作为当前主线分工。已有代码暂不删除，以免破坏可复现实验；相关说明和报告将归入 `documents/legacy/`。
 
 ---
 
@@ -102,7 +96,10 @@ cd colpali-robust
 pip install -e ".[train]"
 
 # 安装额外研究依赖
-pip install pyswarms opencv-python
+pip install opencv-python
+
+# 如需运行历史 PSO 工具，再安装：
+pip install pyswarms
 ```
 
 ### 硬件要求
@@ -120,7 +117,7 @@ pip install pyswarms opencv-python
 
 ```bash
 python -m pytest tests/ -v
-# 预期输出：21 passed
+# 预期：现有单元测试通过；部分模型测试可能需要额外依赖或模型文件
 ```
 
 ---
@@ -165,21 +162,34 @@ python experiments/run_benchmark.py --condition restored --deg heavy_noise --res
 python experiments/run_benchmark.py --condition restored --deg heavy_noise --rest wiener
 ```
 
-### 5. 运行文档分割评估（同学B）
+### 5. 查看最新研究方案与分工
 
 ```bash
+cat documents/project_research_plan_20260525.md
+```
+
+### 6. 新主线实验入口
+
+以下脚本目前作为新分工的入口占位，后续实现应在对应 `robust/` 模块中补齐：
+
+```bash
+python experiments/run_degradation_study.py
+python experiments/run_restoration_analysis.py
+python experiments/run_invariant_learning.py
+python experiments/run_patch_weighting_eval.py
+```
+
+### 7. 历史可选实验
+
+```bash
+# 旧版文档分割对照实验，已不再作为当前主线分工
 python experiments/run_benchmark.py --condition segmented
-```
 
-### 6. PSO 参数寻优（同学D）
-
-```bash
-# 自动搜索最优的 NLMeans 参数，最大化 nDCG@5
+# 旧版 PSO 参数寻优工具，保留作可选参数搜索参考
 python experiments/pso_optimize.py
-# 结果保存到 results/results_pso.json
 ```
 
-### 7. 生成对比图表
+### 8. 生成对比图表
 
 ```bash
 python experiments/visualize_results.py
@@ -204,11 +214,12 @@ for REST in nlmeans wiener gaussian; do
     python experiments/run_benchmark.py --condition restored --deg heavy_noise --rest $REST
 done
 
-# === 第四步：文档分割 ===
-python experiments/run_benchmark.py --condition segmented
+# === 第四步：前端复原与检索解耦分析（新入口待实现） ===
+python experiments/run_restoration_analysis.py
 
-# === 第五步：PSO 寻优 ===
-python experiments/pso_optimize.py
+# === 第五步：退化不变学习与 Patch 加权（新入口待实现） ===
+python experiments/run_invariant_learning.py
+python experiments/run_patch_weighting_eval.py
 
 # === 第六步：生成图表 ===
 python experiments/visualize_results.py
@@ -223,7 +234,7 @@ nDCG@5
 0.6 ┤  ████  ████  ████         ████  ████
 0.4 ┤  ████  ████  ████  ████  ████  ████  ████
     └──────────────────────────────────────────
-      清洁   轻噪  重噪  模糊  倾斜  NLM   Wiener 分割
+      清洁   轻噪  重噪  模糊  倾斜  NLM   Wiener 加权
       基准   ←──────退化──────→  ←──复原──→
 ```
 
@@ -279,13 +290,13 @@ restored = pipeline(degraded_img)
 | `gaussian` | `sigma` (默认1.5) | 高斯平滑，速度最快 |
 | `wiener` | `noise_power` (默认0.01) | Wiener 滤波，频域去模糊 |
 
-### 文档分割
+### 退化不变学习与 Patch 加权
 
 ```python
-from robust.segmentation.document_seg import segment_document
+import robust.invariant_learning
+import robust.patch_weighting
 
-segmented = segment_document(img, padding=5)
-# 返回背景置白的文档图像，减少 ColQwen2 的冗余 patch
+# 当前为新研究主线的模块边界，具体训练目标和加权评分函数将在后续实现。
 ```
 
 ### 评估指标
@@ -307,11 +318,13 @@ mrr = mean_reciprocal_rank(
 )
 ```
 
-### PSO 参数寻优
+### 历史可选模块
 
 ```python
 from robust.optimization.pso import PSOptimizer
+from robust.segmentation.adaptive_seg import adaptive_segment
 
+# PSO 和 segmentation 保留作旧版对照实验或辅助工具，不再对应当前主线分工。
 optimizer = PSOptimizer(
     bounds=[(1, 30), (0.1, 5)],   # [nlmeans_h 范围, gaussian_sigma 范围]
     n_particles=10,
@@ -333,8 +346,9 @@ best_params, best_score = optimizer.optimize(my_objective_fn)
 | `results_clean.json` | 干净图片基准 nDCG@5 |
 | `results_degraded_<类型>.json` | 各退化类型的检索性能 |
 | `results_restored_<退化>_<复原>.json` | 复原后的检索性能 |
-| `results_segmented.json` | 文档分割后的检索性能 |
-| `results_pso.json` | PSO 寻优结果（最优参数） |
+| `results_patch_weighted.json` | 退化感知 Patch 加权后的检索性能 |
+| `results_segmented.json` | 历史可选：文档分割后的检索性能 |
+| `results_pso.json` | 历史可选：PSO 寻优结果 |
 | `comparison_chart.png` | 所有条件对比图 |
 
 每个 JSON 文件格式：
@@ -366,22 +380,19 @@ ColQwen2（Qwen2-VL-2B 底座）相比原版 ColPali（PaliGemma-3B）在 ViDoRe
 | 扫描歪斜 | `tilt(angle=10-15)` |
 | 带版权水印 | `watermark(alpha=0.4)` |
 
-### 关于 PSO 寻优
+### 关于历史模块
 
-PSO（粒子群优化）在这里用于自动搜索最优的图像复原参数，避免手动调参：
-- **搜索空间**：NLMeans 强度 h ∈ [1, 30]，高斯 sigma ∈ [0.1, 5]
-- **目标函数**：验证集上的 nDCG@5
-- **推荐配置**：`n_particles=10, iters=20`（约 30-60 分钟 GPU 时间）
+`robust/segmentation/` 与 `robust/optimization/` 来自旧版分工，当前保留为可选对照实验和辅助工具。新主线不再将文档分割、域外泛化和 PSO 作为独立负责人任务。
 
 ---
 
 ## 注意事项
 
-1. **不要微调模型**：本项目的所有实验均使用 **Inference（推理模式）**，不涉及任何训练，避免算力消耗。
+1. **训练边界**：退化合成、前端复原和 Patch 加权可以先以推理模式完成；退化不变特征学习会涉及训练或微调，应单独记录数据、超参和模型版本。
 
 2. **数据集加载**：ViDoRe 数据集会从 HuggingFace Hub 自动下载，首次运行需要网络连接。可通过设置环境变量 `HF_ENDPOINT=https://hf-mirror.com` 使用国内镜像。
 
-3. **OOD 测试（同学C）**：将域外文档图片放入 `data/ood/<类别>/` 目录，并提供 `queries.txt`，然后用 `--subsets` 参数指向本地路径运行评估。
+3. **旧任务迁移**：旧版 OOD、文档分割和 PSO 内容已迁移为历史/可选方向，当前文档以最新四人分工为准。
 
 ---
 
