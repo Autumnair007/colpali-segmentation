@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence, Set
@@ -23,7 +22,6 @@ from PIL import Image
 from tqdm import tqdm
 
 from colpali_engine.models import ColQwen2, ColQwen2Processor
-from experiments.multiview import AVAILABLE_VIEWS, build_view_batch, fuse_score_matrices, validate_views
 from robust.evaluation.metrics import mean_reciprocal_rank, ndcg_at_k, recall_at_k
 
 
@@ -33,9 +31,6 @@ DEFAULT_DOC_ID = "employment_and_social_developments_in_europe_2024-KEBD24002ENN
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "colqwen2-v1.0"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "results" / "local_hr"
 DEFAULT_VARIANT = "PD_MB_GN_JC_LR_CS"
-DEFAULT_USE_MULTIVIEW = False
-DEFAULT_MULTIVIEW_VIEWS = ["identity", "nlmeans", "gaussian", "wiener"]
-DEFAULT_MULTIVIEW_FUSION = "weighted"
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,24 +45,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--score-batch-size", type=int, default=16)
     parser.add_argument(
-        "--use-multiview",
-        action="store_true",
-        default=DEFAULT_USE_MULTIVIEW,
-        help="Enable training-free multiview score fusion. Defaults to singleview.",
-    )
-    parser.add_argument(
-        "--views",
-        nargs="+",
-        default=DEFAULT_MULTIVIEW_VIEWS,
-        help=f"Multiview branches used only with --use-multiview. Available: {', '.join(AVAILABLE_VIEWS)}",
-    )
-    parser.add_argument(
-        "--fusion",
-        choices=["max", "mean", "weighted"],
-        default=DEFAULT_MULTIVIEW_FUSION,
-        help="Score fusion strategy used only with --use-multiview.",
-    )
-    parser.add_argument(
         "--include-cross-doc-queries",
         action="store_true",
         help="Keep queries that also have relevant pages in other documents.",
@@ -79,16 +56,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Validate dataset wiring without loading the model.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args()
-
-
-def resolve_views(args: argparse.Namespace, argv: Sequence[str] | None = None) -> List[str]:
-    if args.use_multiview:
-        return validate_views(args.views)
-
-    argv = sys.argv[1:] if argv is None else list(argv)
-    if "--views" in argv:
-        print("--views ignored because --use-multiview is not set.")
-    return ["identity"]
 
 
 def load_tables(dataset_root: Path) -> Dict[str, pd.DataFrame]:
@@ -215,14 +182,10 @@ def encode_documents(
     page_paths: Sequence[Path],
     batch_size: int,
     device: str,
-    preprocess_view: str = "identity",
 ) -> List[torch.Tensor]:
     embeddings: List[torch.Tensor] = []
-    desc = f"Encoding pages [{preprocess_view}]"
-    for start in tqdm(range(0, len(page_paths), batch_size), desc=desc):
+    for start in tqdm(range(0, len(page_paths), batch_size), desc="Encoding pages"):
         images = [open_rgb_image(path) for path in page_paths[start : start + batch_size]]
-        if preprocess_view != "identity":
-            images = build_view_batch(images, preprocess_view)
         batch = processor.process_images(images).to(device)
         with torch.no_grad():
             batch_vecs = model(**batch)
@@ -256,11 +219,7 @@ def compute_metrics(scores_matrix: torch.Tensor, query_ids: Sequence[int], relev
 def save_results(output_dir: Path, payload: Dict[str, object]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if not payload.get("use_multiview", False):
-        method_tag = "singleview"
-    else:
-        method_tag = f"multiview-{payload['fusion']}"
-
+    method_tag = "singleview"
     variant = payload["variant"] if payload["mode"] == "degraded" else "clean"
     filename = f"{timestamp}_{payload['mode']}_{method_tag}_{variant}.json"
     path = output_dir / filename
@@ -277,8 +236,6 @@ def main() -> None:
 
     if args.mode is None:
         raise ValueError("--mode is required unless --list-variants is used.")
-
-    selected_views = resolve_views(args)
 
     tables = load_tables(args.dataset_root)
     selected_queries, relevant_pages, summary = select_queries(
@@ -300,10 +257,7 @@ def main() -> None:
         "local_files_only": args.local_files_only,
         "include_cross_doc_queries": args.include_cross_doc_queries,
         "page_count": len(page_paths),
-        "use_multiview": args.use_multiview,
-        "views": selected_views,
-        "fusion": args.fusion,
-        "method": "multiview" if args.use_multiview else "singleview",
+        "method": "singleview",
         "query_summary": summary,
     }
 
@@ -327,39 +281,19 @@ def main() -> None:
     query_ids = selected_queries["query_id"].tolist()
 
     query_embeddings = encode_queries(model, processor, query_texts, args.batch_size, args.device)
-    if not args.use_multiview:
-        doc_embeddings = encode_documents(
-            model,
-            processor,
-            page_paths,
-            args.batch_size,
-            args.device,
-            preprocess_view="identity",
-        )
-        scores_matrix = processor.score_multi_vector(
-            query_embeddings,
-            doc_embeddings,
-            batch_size=args.score_batch_size,
-            device=args.device,
-        )
-    else:
-        score_matrices: Dict[str, torch.Tensor] = {}
-        for view in selected_views:
-            doc_embeddings = encode_documents(
-                model,
-                processor,
-                page_paths,
-                args.batch_size,
-                args.device,
-                preprocess_view=view,
-            )
-            score_matrices[view] = processor.score_multi_vector(
-                query_embeddings,
-                doc_embeddings,
-                batch_size=args.score_batch_size,
-                device=args.device,
-            )
-        scores_matrix = fuse_score_matrices(score_matrices, args.fusion)
+    doc_embeddings = encode_documents(
+        model,
+        processor,
+        page_paths,
+        args.batch_size,
+        args.device,
+    )
+    scores_matrix = processor.score_multi_vector(
+        query_embeddings,
+        doc_embeddings,
+        batch_size=args.score_batch_size,
+        device=args.device,
+    )
 
     metrics = compute_metrics(scores_matrix, query_ids, relevant_pages)
     payload["metrics"] = metrics

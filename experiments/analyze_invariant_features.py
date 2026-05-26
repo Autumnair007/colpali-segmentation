@@ -11,8 +11,7 @@ from typing import Sequence
 import torch
 import torch.nn.functional as F
 
-from experiments.invariant_calibration import mean_pool_embedding
-from experiments.invariant_embeddings import DEFAULT_CACHE_ROOT, load_or_encode_page_embeddings
+from experiments.invariant_embeddings import DEFAULT_CACHE_ROOT, load_or_encode_page_embeddings, mean_pool_embedding
 from experiments.run_local_hr_benchmark import (
     DATASET_ROOT,
     DEFAULT_DOC_ID,

@@ -10,7 +10,6 @@ Usage:
     python experiments/run_benchmark.py --condition degraded --deg heavy_noise
     python experiments/run_benchmark.py --condition restored --deg heavy_noise --rest nlmeans
     python experiments/run_benchmark.py --condition segmented
-    python experiments/run_benchmark.py --condition multiview --views identity nlmeans gaussian wiener
 """
 import sys
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
@@ -26,7 +25,6 @@ from typing import Callable, List, Sequence
 from experiments.config import (
     MODEL_NAME, PROCESSOR_NAME, DEVICE, BATCH_SIZE, RESULTS_DIR, VIDORE_SUBSETS
 )
-from experiments.multiview import build_view_batch, fuse_score_matrices, validate_views
 from colpali_engine.models import ColQwen2, ColQwen2Processor
 from robust.evaluation.metrics import ndcg_at_k, recall_at_k, mean_reciprocal_rank
 
@@ -178,52 +176,12 @@ def evaluate_subset(
     return compute_metrics(scores_matrix)
 
 
-def evaluate_subset_multiview(
-    model,
-    processor,
-    subset_name: str,
-    views: Sequence[str],
-    fusion: str,
-    local_files_only: bool = False,
-    score_batch_size: int = 16,
-) -> dict:
-    views = validate_views(views)
-    print(f"  Loading {subset_name}...")
-    ds = load_eval_dataset(subset_name, local_files_only=local_files_only)
-    queries = [row["query"] for row in ds]
-    images = [row["image"].convert("RGB") for row in ds]
-
-    all_q_vecs = encode_queries(model, processor, queries)
-
-    score_matrices = {}
-    for view in views:
-        all_d_vecs = encode_documents(
-            model,
-            processor,
-            images,
-            preprocess_fn=lambda batch, view=view: build_view_batch(batch, view),
-            desc=f"  Encoding docs [{view}]",
-        )
-        score_matrices[view] = processor.score_multi_vector(
-            all_q_vecs,
-            all_d_vecs,
-            batch_size=score_batch_size,
-            device=DEVICE,
-        )
-
-    scores_matrix = fuse_score_matrices(score_matrices, fusion)
-    metrics = compute_metrics(scores_matrix)
-    metrics["fusion"] = fusion
-    metrics["views"] = views
-    return metrics
-
-
 def main():
     global DEVICE
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--condition", default="clean",
-                        choices=["clean", "degraded", "restored", "segmented", "multiview"])
+                        choices=["clean", "degraded", "restored", "segmented"])
     parser.add_argument("--deg",  default="heavy_noise",
                         help="Degradation type (for degraded/restored)")
     parser.add_argument("--rest", default="nlmeans",
@@ -231,12 +189,6 @@ def main():
     parser.add_argument("--seg_method", default="adaptive",
                         choices=["adaptive", "grabcut", "edge"],
                         help="Segmentation method (for segmented)")
-    parser.add_argument("--views", nargs="+",
-                        default=["identity", "nlmeans", "gaussian", "wiener"],
-                        help="Multiview branches to encode (for multiview)")
-    parser.add_argument("--fusion", default="weighted",
-                        choices=["max", "mean", "weighted"],
-                        help="Score fusion strategy (for multiview)")
     parser.add_argument("--local-files-only", action="store_true",
                         help="Use only locally cached Hugging Face model and dataset files.")
     parser.add_argument("--model", default=None,
@@ -260,33 +212,20 @@ def main():
         processor_name=processor_name,
         local_files_only=args.local_files_only,
     )
-    preprocess_fn = None
-    if args.condition != "multiview":
-        preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest,
-                                         seg_method=args.seg_method)
+    preprocess_fn = get_preprocessor(args.condition, args.deg, args.rest,
+                                     seg_method=args.seg_method)
 
     results = {}
     for subset in args.subsets:
         print(f"\nEvaluating: {subset.split('/')[-1]}")
-        if args.condition == "multiview":
-            metrics = evaluate_subset_multiview(
-                model,
-                processor,
-                subset,
-                views=args.views,
-                fusion=args.fusion,
-                local_files_only=args.local_files_only,
-                score_batch_size=args.score_batch_size,
-            )
-        else:
-            metrics = evaluate_subset(
-                model,
-                processor,
-                subset,
-                preprocess_fn,
-                local_files_only=args.local_files_only,
-                score_batch_size=args.score_batch_size,
-            )
+        metrics = evaluate_subset(
+            model,
+            processor,
+            subset,
+            preprocess_fn,
+            local_files_only=args.local_files_only,
+            score_batch_size=args.score_batch_size,
+        )
         results[subset.split("/")[-1]] = metrics
         print(f"  nDCG@5={metrics['ndcg@5']:.4f}  Recall@5={metrics['recall@5']:.4f}  MRR={metrics['mrr']:.4f}")
 
@@ -298,8 +237,6 @@ def main():
         tag += f"_{args.deg}_{args.rest}"
     elif args.condition == "segmented":
         tag += f"_{args.seg_method}"
-    elif args.condition == "multiview":
-        tag += f"_{args.fusion}_{'-'.join(args.views)}"
     if len(args.subsets) == 1:
         tag += f"_{args.subsets[0].split('/')[-1]}"
 

@@ -40,10 +40,20 @@ def result_key(payload: dict[str, Any]) -> str | None:
         return "singleview_clean"
     if method == "singleview" and mode == "degraded":
         return "singleview_degraded"
+    # Historical result files only; the multiview and calibration experiment code
+    # paths were removed after their gains proved too small or negative.
     if method == "multiview" and mode == "degraded":
         return "multiview_degraded"
     if method == "invariant_calibration":
         return "invariant_calibration_degraded"
+    if method == "robust_late_interaction":
+        scoring = payload.get("scoring", {})
+        reduction = scoring.get("reduction", "unknown")
+        if reduction == "topk_mean":
+            return f"robust_late_interaction_topk{scoring.get('top_k', 'x')}"
+        if reduction == "smoothmax":
+            return f"robust_late_interaction_smoothmax_{scoring.get('temperature', 'x')}"
+        return f"robust_late_interaction_{reduction}"
     return None
 
 
@@ -79,6 +89,7 @@ def build_summary(picked: dict[str, tuple[Path, dict[str, Any]]]) -> dict[str, A
             "mode": payload.get("mode", "degraded"),
             "variant": payload.get("variant") or payload.get("eval_variant"),
             "use_multiview": payload.get("use_multiview", False),
+            "scoring": payload.get("scoring"),
         }
         for metric in METRICS:
             value = metrics.get(metric)

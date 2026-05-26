@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
+import torch.nn.functional as F
 
-from experiments.invariant_calibration import mean_pool_embedding as _mean_pool_embedding
 from experiments.run_local_hr_benchmark import (
     DEFAULT_DOC_ID,
     DEFAULT_OUTPUT_DIR,
@@ -19,7 +19,10 @@ DEFAULT_CACHE_ROOT = DEFAULT_OUTPUT_DIR.parent / "invariant_cache"
 
 
 def mean_pool_embedding(embedding: torch.Tensor) -> torch.Tensor:
-    return _mean_pool_embedding(embedding)
+    """Mean-pool a multi-vector page embedding into one normalized page vector."""
+    if embedding.ndim != 2:
+        raise ValueError(f"Expected a 2D embedding tensor, got shape {tuple(embedding.shape)}.")
+    return F.normalize(embedding.float().mean(dim=0), p=2, dim=0)
 
 
 def embedding_cache_path(cache_root: Path, doc_id: str, mode: str, variant: str) -> Path:
