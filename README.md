@@ -47,7 +47,7 @@ ViDoRe 干净文档图像
 | --- | --- | --- | --- |
 | 廖锐煊 | 退化文档数据集的可控合成与退化敏感性基准评估 | 基于 ViDoRe 图像设计参数化多退化合成管线，支持单一退化和多退化耦合；评估退化类型和强度对 ColPali 检索性能的影响 | `robust/degradation/`, `experiments/` |
 | 王昱皓 | 轻量级前端复原网络的集成测试与“复原-检索”解耦分析 | 集成 DnCNN/FFDNet、ESRGAN/BSRGAN 轻量变体、传统去噪/去模糊/倾斜校正方法；比较原始、退化、复原后的 Patch 嵌入分布与检索得分 | `robust/restoration/`, `experiments/` |
-| 何青泽 | 退化不变特征学习策略研究与验证 | 构造 clean-degraded 正样本对，引入对比学习、Patch 嵌入对齐、风格归一化或域对抗训练，提升模型表示的退化不变性 | `robust/invariant_learning/` |
+| 何青泽 | 退化不变特征学习策略研究与验证 | 冻结 ColQwen2 主干，在 cached embedding 层训练轻量 residual adapter，使退化页面的检索分数向 clean teacher 对齐 | `robust/invariant_learning/`, `artifacts/invariant_adapter/` |
 | 郭明坤 | 退化感知延迟交互加权机制与整体评估 | 在 ColPali 延迟交互计算中引入 Patch 置信度，降低严重退化 Patch 的误导性权重；构建融合检索精度、延迟和存储代价的评估体系 | `robust/patch_weighting/`, `robust/evaluation/` |
 
 ---
@@ -71,8 +71,13 @@ colpali-robust/
 │   ├── run_benchmark.py
 │   ├── run_degradation_study.py
 │   ├── run_restoration_analysis.py
-│   ├── run_invariant_learning.py
+│   ├── build_invariant_splits.py
+│   ├── invariant_embeddings.py
+│   ├── run_invariant_adapter_training.py
+│   ├── evaluate_invariant_adapter.py
 │   └── run_patch_weighting_eval.py
+├── artifacts/
+│   └── invariant_adapter/          # 退化不变 Adapter 权重与元数据
 ├── documents/
 │   ├── project_research_plan_20260525.md
 │   └── legacy/
@@ -170,13 +175,20 @@ cat documents/project_research_plan_20260525.md
 
 ### 6. 新主线实验入口
 
-以下脚本目前作为新分工的入口占位，后续实现应在对应 `robust/` 模块中补齐：
+退化、复原和 Patch 加权方向保留独立入口，后续实现继续在对应 `robust/` 模块中补齐：
 
 ```bash
 python experiments/run_degradation_study.py
 python experiments/run_restoration_analysis.py
-python experiments/run_invariant_learning.py
 python experiments/run_patch_weighting_eval.py
+```
+
+退化不变 Adapter 方向已经提供 split 构建、训练和离线评测入口：
+
+```bash
+python experiments/build_invariant_splits.py
+python experiments/run_invariant_adapter_training.py
+python experiments/evaluate_invariant_adapter.py
 ```
 
 ### 7. 历史可选实验
@@ -217,11 +229,15 @@ done
 # === 第四步：前端复原与检索解耦分析（新入口待实现） ===
 python experiments/run_restoration_analysis.py
 
-# === 第五步：退化不变学习与 Patch 加权（新入口待实现） ===
-python experiments/run_invariant_learning.py
+# === 第五步：退化不变 Adapter 训练与评测 ===
+python experiments/build_invariant_splits.py
+python experiments/run_invariant_adapter_training.py
+python experiments/evaluate_invariant_adapter.py
+
+# === 第六步：Patch 加权（新入口待实现） ===
 python experiments/run_patch_weighting_eval.py
 
-# === 第六步：生成图表 ===
+# === 第七步：生成图表 ===
 python experiments/visualize_results.py
 ```
 
@@ -290,13 +306,16 @@ restored = pipeline(degraded_img)
 | `gaussian` | `sigma` (默认1.5) | 高斯平滑，速度最快 |
 | `wiener` | `noise_power` (默认0.01) | Wiener 滤波，频域去模糊 |
 
-### 退化不变学习与 Patch 加权
+### 退化不变 Adapter 与 Patch 加权
 
 ```python
-import robust.invariant_learning
+from robust.invariant_learning import ResidualEmbeddingAdapter
 import robust.patch_weighting
 
-# 当前为新研究主线的模块边界，具体训练目标和加权评分函数将在后续实现。
+# 退化不变 Adapter 在 cached embedding 层工作，不训练 ColQwen2 主干。
+adapter = ResidualEmbeddingAdapter(dim=128, hidden_dim=256)
+
+# Patch 加权仍保留为独立研究模块边界。
 ```
 
 ### 评估指标
@@ -346,6 +365,8 @@ best_params, best_score = optimizer.optimize(my_objective_fn)
 | `results_clean.json` | 干净图片基准 nDCG@5 |
 | `results_degraded_<类型>.json` | 各退化类型的检索性能 |
 | `results_restored_<退化>_<复原>.json` | 复原后的检索性能 |
+| `results/invariant_learning/<实验名>/` | 退化不变 Adapter 训练日志、验证指标、测试评测和漂移分析 |
+| `artifacts/invariant_adapter/tune_distill6_seed13/` | 已整理的 Adapter checkpoint、元数据与使用说明 |
 | `results_patch_weighted.json` | 退化感知 Patch 加权后的检索性能 |
 | `results_segmented.json` | 历史可选：文档分割后的检索性能 |
 | `results_pso.json` | 历史可选：PSO 寻优结果 |

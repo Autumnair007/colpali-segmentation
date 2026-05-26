@@ -15,6 +15,7 @@ from experiments.invariant_embeddings import (
     load_or_encode_restored_proxy_embeddings,
 )
 from experiments.invariant_splits import DEFAULT_OUTPUT_DIR, DEFAULT_SEED, load_or_build_manifest
+from experiments.config import DEVICE
 from experiments.run_invariant_adapter_training import (
     evaluate_adapter_on_embeddings,
     filter_queries_by_ids,
@@ -25,6 +26,7 @@ from experiments.run_local_hr_benchmark import (
     DEFAULT_DOC_ID,
     DEFAULT_MODEL_PATH,
     DEFAULT_VARIANT,
+    PROJECT_ROOT,
     encode_queries,
     load_model,
     load_tables,
@@ -33,16 +35,19 @@ from experiments.run_local_hr_benchmark import (
 from robust.invariant_learning import ResidualEmbeddingAdapter
 
 
+DEFAULT_ADAPTER_CHECKPOINT = PROJECT_ROOT / "artifacts" / "invariant_adapter" / "tune_distill6_seed13" / "adapter_checkpoint.pt"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate trained invariant adapter.")
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_OUTPUT_DIR / "adapter_checkpoint.pt")
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_ADAPTER_CHECKPOINT)
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT)
     parser.add_argument("--doc-id", default=DEFAULT_DOC_ID)
     parser.add_argument("--split-manifest", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--model", default=str(DEFAULT_MODEL_PATH))
     parser.add_argument("--processor", default=None)
-    parser.add_argument("--device", default="cuda:1")
+    parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--model-batch-size", type=int, default=4)
     parser.add_argument("--query-batch-size", type=int, default=1)
@@ -60,7 +65,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_adapter(checkpoint_path: Path, device: str) -> ResidualEmbeddingAdapter:
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     adapter = ResidualEmbeddingAdapter(dim=int(payload["dim"]), hidden_dim=int(payload["hidden_dim"]))
     adapter.load_state_dict(payload["state_dict"])
     return adapter.to(device).eval()

@@ -1,0 +1,60 @@
+{
+  "name": "heqingze_invariant_adapter_tune_distill6_seed13",
+  "checkpoint": "adapter_checkpoint.pt",
+  "sha256": "f0adf3fc07ea653abbf63cc4ee5bd771c062d7878014c279badd34ebd800abff",
+  "owner": "何青泽",
+  "method": "冻结 ColQwen2 主干的 residual embedding adapter",
+  "seed": 13,
+  "adapter": {
+    "dim": 128,
+    "hidden_dim": 256,
+    "init_scale": 0.1
+  },
+  "training": {
+    "best_epoch": 2,
+    "epochs": 30,
+    "patience": 6,
+    "temperature": 0.07,
+    "learning_rate": 0.001,
+    "score_weight": 2.0,
+    "rank_weight": 0.5,
+    "identity_weight": 0.01,
+    "train_variants": ["CS", "GN", "JC", "LR", "MB", "PD"],
+    "validation_metric": "验证 query group 与验证退化 variant 上的平均 nDCG@5"
+  },
+  "dataset": {
+    "doc_id": "employment_and_social_developments_in_europe_2024-KEBD24002ENN",
+    "pages": 111,
+    "query_split": {
+      "train_groups": 17,
+      "train_queries": 102,
+      "val_groups": 6,
+      "val_queries": 36,
+      "test_groups": 6,
+      "test_queries": 36
+    },
+    "main_test_variant": "PD_MB_GN_JC_LR_CS"
+  },
+  "main_test_metrics": {
+    "degraded_original": {
+      "ndcg@5": 0.45061050176071504,
+      "recall@5": 0.3726851851851852,
+      "mrr": 0.5957150361092475
+    },
+    "degraded_adapter": {
+      "ndcg@5": 0.499743541192513,
+      "recall@5": 0.42592592592592593,
+      "mrr": 0.6371560107016596
+    },
+    "gain": {
+      "ndcg@5": 0.049133039431797976,
+      "recall@5": 0.053240740740740755,
+      "mrr": 0.04144097459241214
+    }
+  },
+  "notes": [
+    "ColQwen2 主干全程冻结。",
+    "clean embeddings 只作为 teacher，不经过 adapter。",
+    "该 checkpoint 在主 held-out raw degraded variant 和 proxy restored variant 上验证有效；额外高强度 raw variant 的泛化并非全部为正。"
+  ]
+}

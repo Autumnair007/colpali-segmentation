@@ -16,6 +16,7 @@ from experiments.invariant_embeddings import (
     load_or_encode_page_embeddings,
     load_or_encode_restored_proxy_embeddings,
 )
+from experiments.config import DEVICE
 from experiments.invariant_splits import DEFAULT_OUTPUT_DIR, DEFAULT_SEED, flatten_query_ids, load_or_build_manifest
 from experiments.robust_late_interaction import score_multi_vector_robust
 from experiments.run_local_hr_benchmark import (
@@ -43,6 +44,19 @@ DEFAULT_EPOCHS = 100
 DEFAULT_PATIENCE = 10
 
 
+def checkpoint_metadata(value: Any) -> Any:
+    """Convert metadata to PyTorch weights-only-safe Python containers."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): checkpoint_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [checkpoint_metadata(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train invariant adapter on cached clean/degraded embeddings.")
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT)
@@ -51,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--model", default=str(DEFAULT_MODEL_PATH))
     parser.add_argument("--processor", default=None)
-    parser.add_argument("--device", default="cuda:1")
+    parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--model-batch-size", type=int, default=4)
     parser.add_argument("--query-batch-size", type=int, default=1)
@@ -428,8 +442,8 @@ def main() -> None:
             "best_epoch": best_epoch,
             "best_val_ndcg@5": best_ndcg,
             "manifest_path": str(manifest_file),
-            "training_args": vars(args),
-            "query_summary": query_summary,
+            "training_args": checkpoint_metadata(vars(args)),
+            "query_summary": checkpoint_metadata(query_summary),
             "clean_cache": str(clean_cache),
         },
         checkpoint_path,

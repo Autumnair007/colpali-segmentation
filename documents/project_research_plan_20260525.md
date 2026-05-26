@@ -61,4 +61,4 @@ documents/legacy/           历史分割/PSO 等旧方案资料
 1. 将 README、项目结构和文档统一到最新分工。
 2. 保留旧实验代码，但将文档分割和 PSO 标记为历史/可选模块。
 3. 为退化不变学习和 Patch 加权新增模块骨架，便于后续填充实现。
-4. 后续代码实现应优先补齐 `run_degradation_study.py`、`run_restoration_analysis.py`、`run_invariant_learning.py` 和 `run_patch_weighting_eval.py` 四类实验入口。
+4. 后续代码实现应优先补齐 `run_degradation_study.py`、`run_restoration_analysis.py` 和 `run_patch_weighting_eval.py` 三类实验入口；何青泽的退化不变方向已改为 `build_invariant_splits.py`、`run_invariant_adapter_training.py` 和 `evaluate_invariant_adapter.py`。

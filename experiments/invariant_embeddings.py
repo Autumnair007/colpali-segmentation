@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
+from experiments.config import DEVICE
 from experiments.run_local_hr_benchmark import (
     DEFAULT_DOC_ID,
     DEFAULT_OUTPUT_DIR,
@@ -138,7 +139,7 @@ def load_or_encode_page_embeddings(
     mode: str = "clean",
     variant: str = "clean",
     batch_size: int = 4,
-    device: str = "cuda:1",
+    device: str = DEVICE,
     cache_root: Path = DEFAULT_CACHE_ROOT,
     max_docs: int | None = None,
     overwrite_cache: bool = False,
@@ -176,7 +177,7 @@ def load_or_encode_restored_proxy_embeddings(
     degraded_variant: str,
     restoration: str,
     batch_size: int = 4,
-    device: str = "cuda:1",
+    device: str = DEVICE,
     cache_root: Path = DEFAULT_CACHE_ROOT,
     max_docs: int | None = None,
     overwrite_cache: bool = False,
